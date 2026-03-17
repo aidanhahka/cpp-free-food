@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { getSampleEvents } from '@/lib/scraper';
+import { getSampleEvents, scrapeAllSources } from '@/lib/scraper';
 
 export const maxDuration = 60;
 export const runtime = 'nodejs';
@@ -14,7 +14,18 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const eventsToInsert = getSampleEvents();
+    let eventsToInsert;
+    let scrapeMethod = 'live';
+
+    try {
+      const scraped = await scrapeAllSources();
+      eventsToInsert = scraped.length > 0 ? scraped : getSampleEvents();
+      if (scraped.length === 0) scrapeMethod = 'sample_fallback';
+    } catch (err) {
+      console.log('Live scraping failed, using samples:', err);
+      eventsToInsert = getSampleEvents();
+      scrapeMethod = 'sample_fallback';
+    }
 
     const rows = eventsToInsert.map(event => ({
       title: event.title,
@@ -43,6 +54,7 @@ export async function GET(request: NextRequest) {
       success: true,
       inserted: data?.length ?? 0,
       total: rows.length,
+      method: scrapeMethod,
     });
   } catch (err) {
     console.error('Scrape route error:', err);
