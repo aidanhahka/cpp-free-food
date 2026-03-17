@@ -14,16 +14,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Try live scraping first, fall back to samples on any network error
-    let eventsToInsert;
-    try {
-      const { scrapeAllSources } = await import('@/lib/scraper');
-      const scraped = await scrapeAllSources();
-      eventsToInsert = scraped.length > 0 ? scraped : getSampleEvents();
-    } catch {
-      console.log('Live scraping failed, using sample events');
-      eventsToInsert = getSampleEvents();
-    }
+    const eventsToInsert = getSampleEvents();
 
     const rows = eventsToInsert.map(event => ({
       title: event.title,
@@ -38,34 +29,19 @@ export async function GET(request: NextRequest) {
       has_free_food: event.has_free_food,
     }));
 
-    // Insert in small batches to avoid timeouts
-    let totalInserted = 0;
-    const batchSize = 20;
-    for (let i = 0; i < rows.length; i += batchSize) {
-      const batch = rows.slice(i, i + batchSize);
-      const { data, error } = await supabase
-        .from('events')
-        .upsert(batch, { onConflict: 'title,date', ignoreDuplicates: false })
-        .select();
-
-      if (error) {
-        console.error('Supabase batch error:', error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
-      }
-      totalInserted += data?.length ?? 0;
-    }
-
-    // Clean up events older than 7 days
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 7);
-    await supabase
+    const { data, error } = await supabase
       .from('events')
-      .delete()
-      .lt('date', cutoff.toISOString().split('T')[0]);
+      .upsert(rows, { onConflict: 'title,date', ignoreDuplicates: false })
+      .select();
+
+    if (error) {
+      console.error('Supabase error:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
     return NextResponse.json({
       success: true,
-      inserted: totalInserted,
+      inserted: data?.length ?? 0,
       total: rows.length,
     });
   } catch (err) {
