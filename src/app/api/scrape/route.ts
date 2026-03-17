@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { scrapeAllSources, getSampleEvents } from '@/lib/scraper';
+import { getSampleEvents } from '@/lib/scraper';
 
-export const maxDuration = 60; // 60 second timeout for scraping
+export const maxDuration = 60;
+export const runtime = 'nodejs';
 
 export async function GET(request: NextRequest) {
-  // Protect this endpoint so only Vercel cron (or you) can call it
   const authHeader = request.headers.get('authorization');
   const cronSecret = process.env.CRON_SECRET;
 
@@ -14,41 +14,48 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Scrape from all sources
-    const scrapedEvents = await scrapeAllSources();
-
-    // If still empty, ensure sample data exists
-    const eventsToInsert = scrapedEvents.length > 0 ? scrapedEvents : getSampleEvents();
-
-    // Upsert to Supabase (update if title+date already exists)
-    const { data, error } = await supabase
-      .from('events')
-      .upsert(
-        eventsToInsert.map(event => ({
-          title: event.title,
-          description: event.description,
-          date: event.date,
-          time: event.time,
-          location: event.location,
-          organizer: event.organizer,
-          source_url: event.source_url,
-          source_name: event.source_name,
-          tags: event.tags,
-          has_free_food: event.has_free_food,
-        })),
-        {
-          onConflict: 'title,date', // avoid duplicates
-          ignoreDuplicates: false,
-        }
-      )
-      .select();
-
-    if (error) {
-      console.error('Supabase upsert error:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    // Try live scraping first, fall back to samples on any network error
+    let eventsToInsert;
+    try {
+      const { scrapeAllSources } = await import('@/lib/scraper');
+      const scraped = await scrapeAllSources();
+      eventsToInsert = scraped.length > 0 ? scraped : getSampleEvents();
+    } catch {
+      console.log('Live scraping failed, using sample events');
+      eventsToInsert = getSampleEvents();
     }
 
-    // Clean up old events (older than 7 days)
+    const rows = eventsToInsert.map(event => ({
+      title: event.title,
+      description: event.description,
+      date: event.date,
+      time: event.time,
+      location: event.location,
+      organizer: event.organizer,
+      source_url: event.source_url,
+      source_name: event.source_name,
+      tags: event.tags,
+      has_free_food: event.has_free_food,
+    }));
+
+    // Insert in small batches to avoid timeouts
+    let totalInserted = 0;
+    const batchSize = 20;
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const batch = rows.slice(i, i + batchSize);
+      const { data, error } = await supabase
+        .from('events')
+        .upsert(batch, { onConflict: 'title,date', ignoreDuplicates: false })
+        .select();
+
+      if (error) {
+        console.error('Supabase batch error:', error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+      totalInserted += data?.length ?? 0;
+    }
+
+    // Clean up events older than 7 days
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 7);
     await supabase
@@ -58,11 +65,11 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      inserted: data?.length ?? 0,
-      total_scraped: eventsToInsert.length,
+      inserted: totalInserted,
+      total: rows.length,
     });
   } catch (err) {
-    console.error('Scrape API error:', err);
+    console.error('Scrape route error:', err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
