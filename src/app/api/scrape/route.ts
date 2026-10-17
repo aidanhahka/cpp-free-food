@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getSupabaseAdmin } from '@/lib/supabase';
 import { getSampleEvents, scrapeAllSources } from '@/lib/scraper';
 
 export const maxDuration = 60;
@@ -14,13 +14,18 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const supabase = getSupabaseAdmin();
+
     let eventsToInsert;
     let scrapeMethod = 'live';
 
     try {
       const scraped = await scrapeAllSources();
       eventsToInsert = scraped.length > 0 ? scraped : getSampleEvents();
-      if (scraped.length === 0) scrapeMethod = 'sample_fallback';
+
+      if (scraped.length === 0) {
+        scrapeMethod = 'sample_fallback';
+      }
     } catch (err) {
       console.log('Live scraping failed, using samples:', err);
       eventsToInsert = getSampleEvents();
@@ -42,12 +47,19 @@ export async function GET(request: NextRequest) {
 
     const { data, error } = await supabase
       .from('events')
-      .upsert(rows, { onConflict: 'title,date', ignoreDuplicates: false })
+      .upsert(rows, {
+        onConflict: 'title,date',
+        ignoreDuplicates: false,
+      })
       .select();
 
     if (error) {
       console.error('Supabase error:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+
+      return NextResponse.json(
+        { error: error.message },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
@@ -58,6 +70,10 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     console.error('Scrape route error:', err);
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+
+    return NextResponse.json(
+      { error: String(err) },
+      { status: 500 }
+    );
   }
 }
