@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase';
-import { getSampleEvents, scrapeAllSources } from '@/lib/scraper';
+import { scrapeAllSources } from '@/lib/scraper';
 
 export const maxDuration = 60;
 export const runtime = 'nodejs';
@@ -10,29 +10,28 @@ export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
 
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json(
+      { error: 'Unauthorized' },
+      { status: 401 }
+    );
   }
 
   try {
     const supabase = getSupabaseAdmin();
 
-    let eventsToInsert;
-    let scrapeMethod = 'live';
+    const scrapedEvents = await scrapeAllSources();
 
-    try {
-      const scraped = await scrapeAllSources();
-      eventsToInsert = scraped.length > 0 ? scraped : getSampleEvents();
-
-      if (scraped.length === 0) {
-        scrapeMethod = 'sample_fallback';
-      }
-    } catch (err) {
-      console.log('Live scraping failed, using samples:', err);
-      eventsToInsert = getSampleEvents();
-      scrapeMethod = 'sample_fallback';
+    if (scrapedEvents.length === 0) {
+      return NextResponse.json({
+        success: true,
+        inserted: 0,
+        total: 0,
+        method: 'live',
+        message: 'No confirmed free-food events found.',
+      });
     }
 
-    const rows = eventsToInsert.map(event => ({
+    const rows = scrapedEvents.map(event => ({
       title: event.title,
       description: event.description,
       date: event.date,
@@ -41,8 +40,14 @@ export async function GET(request: NextRequest) {
       organizer: event.organizer,
       source_url: event.source_url,
       source_name: event.source_name,
+      source_event_id: event.source_event_id ?? null,
       tags: event.tags,
       has_free_food: event.has_free_food,
+      food_evidence: event.food_evidence ?? null,
+      food_confidence: event.food_confidence ?? 1,
+      rsvp_required: event.rsvp_required ?? null,
+      updated_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(),
     }));
 
     const { data, error } = await supabase
@@ -66,7 +71,7 @@ export async function GET(request: NextRequest) {
       success: true,
       inserted: data?.length ?? 0,
       total: rows.length,
-      method: scrapeMethod,
+      method: 'live',
     });
   } catch (err) {
     console.error('Scrape route error:', err);

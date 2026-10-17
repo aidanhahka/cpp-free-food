@@ -9,424 +9,425 @@ export type ScrapedEvent = {
   organizer: string | null;
   source_url: string | null;
   source_name: string;
+  source_event_id?: string | null;
   tags: string[];
   has_free_food: boolean;
+  food_evidence?: string | null;
+  food_confidence?: number;
+  rsvp_required?: boolean | null;
 };
 
-const FREE_FOOD_KEYWORDS = [
-  'free food', 'free lunch', 'free dinner', 'free breakfast', 'free snacks',
-  'refreshments provided', 'light refreshments', 'food provided', 'food will be provided',
-  'complimentary food', 'free pizza', 'free tacos', 'free burgers', 'free sandwiches',
-  'snacks provided', 'free meals', 'free eats', 'grab some food', 'come hungry',
-  'food and drinks', 'free drinks', 'catered', 'catering provided',
-  'while supplies last', 'first come first served food',
+const CPP_EVENTS_URL =
+  'https://www.cpp.edu/mobile-app/events/university-events/list.shtml';
+
+const FREE_FOOD_PATTERNS = [
+  /\bfree food\b/i,
+  /\bfree lunch\b/i,
+  /\bfree dinner\b/i,
+  /\bfree breakfast\b/i,
+  /\bfree snacks?\b/i,
+  /\bfree pizza\b/i,
+  /\bfree tacos?\b/i,
+  /\bfree burgers?\b/i,
+  /\bfree sandwiches?\b/i,
+  /\bfree refreshments?\b/i,
+  /\bcomplimentary food\b/i,
+  /\bcomplimentary refreshments?\b/i,
+
+  /\bfood (?:will be |is |are )?provided\b/i,
+  /\bfood and drinks (?:will be |are )?provided\b/i,
+  /\bdrinks and food (?:will be |are )?provided\b/i,
+  /\blunch (?:will be |is )?provided\b/i,
+  /\bdinner (?:will be |is )?provided\b/i,
+  /\bbreakfast (?:will be |is )?provided\b/i,
+  /\bsnacks? (?:will be |are )?provided\b/i,
+  /\brefreshments? (?:will be |are )?provided\b/i,
+
+  /\bwe(?:'ll| will) provide (?:food|lunch|dinner|pizza|tacos|snacks)\b/i,
+  /\bwe(?:'ll| will) have (?:food|pizza|pizzas|tacos|snacks)\b/i,
 ];
 
+const MONTHS: Record<string, string> = {
+  january: '01',
+  february: '02',
+  march: '03',
+  april: '04',
+  may: '05',
+  june: '06',
+  july: '07',
+  august: '08',
+  september: '09',
+  october: '10',
+  november: '11',
+  december: '12',
+};
+
+function cleanText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function findFoodEvidence(text: string): string | null {
+  const cleaned = cleanText(text);
+
+  for (const pattern of FREE_FOOD_PATTERNS) {
+    const match = cleaned.match(pattern);
+
+    if (match && match.index !== undefined) {
+      const start = Math.max(0, match.index - 80);
+      const end = Math.min(
+        cleaned.length,
+        match.index + match[0].length + 120
+      );
+
+      return cleaned.slice(start, end).trim();
+    }
+  }
+
+  return null;
+}
+
 function containsFreeFood(text: string): boolean {
-  const lower = text.toLowerCase();
-  return FREE_FOOD_KEYWORDS.some(kw => lower.includes(kw));
+  return findFoodEvidence(text) !== null;
 }
 
 function extractTags(text: string): string[] {
-  const tags: string[] = [];
   const lower = text.toLowerCase();
-  if (lower.includes('club') || lower.includes('organization')) tags.push('Club');
-  if (lower.includes('career') || lower.includes('job') || lower.includes('internship')) tags.push('Career');
-  if (lower.includes('workshop') || lower.includes('seminar') || lower.includes('lecture')) tags.push('Academic');
-  if (lower.includes('social') || lower.includes('mixer') || lower.includes('networking')) tags.push('Social');
-  if (lower.includes('cultural') || lower.includes('diversity')) tags.push('Cultural');
-  if (lower.includes('sport') || lower.includes('game') || lower.includes('tournament')) tags.push('Sports');
-  if (containsFreeFood(text)) tags.push('Free Food');
+  const tags: string[] = [];
+
+  if (
+    lower.includes('student club') ||
+    lower.includes('club event') ||
+    lower.includes('student organization')
+  ) {
+    tags.push('Club');
+  }
+
+  if (
+    lower.includes('career') ||
+    lower.includes('internship') ||
+    lower.includes('professional') ||
+    lower.includes('industry')
+  ) {
+    tags.push('Career');
+  }
+
+  if (
+    lower.includes('workshop') ||
+    lower.includes('lecture') ||
+    lower.includes('seminar') ||
+    lower.includes('learn')
+  ) {
+    tags.push('Academic');
+  }
+
+  if (
+    lower.includes('social') ||
+    lower.includes('mixer') ||
+    lower.includes('networking')
+  ) {
+    tags.push('Social');
+  }
+
+  if (
+    lower.includes('cultural') ||
+    lower.includes('culture') ||
+    lower.includes('heritage')
+  ) {
+    tags.push('Cultural');
+  }
+
+  if (
+    lower.includes('sport') ||
+    lower.includes('game') ||
+    lower.includes('tournament')
+  ) {
+    tags.push('Sports');
+  }
+
+  if (containsFreeFood(text)) {
+    tags.push('Free Food');
+  }
+
   return Array.from(new Set(tags));
 }
 
-async function fetchWithTimeout(url: string, timeout = 10000): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  timeout = 15000
+): Promise<Response> {
   const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
   try {
-    const response = await fetch(url, {
+    return await fetch(url, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; CPPFreeFoodBot/1.0)',
+        'User-Agent':
+          'Mozilla/5.0 (compatible; CPPFreeFood/1.0; public-event-indexer)',
+        Accept: 'text/html,application/xhtml+xml',
       },
+      cache: 'no-store',
     });
-    return response;
   } finally {
-    clearTimeout(id);
+    clearTimeout(timeoutId);
   }
 }
 
-// -------------------------------------------------------
-// Scraper 1: Cal Poly Pomona Campus Labs / CampusGroups
-// -------------------------------------------------------
-async function scrapeCPPCampusGroups(): Promise<ScrapedEvent[]> {
-  const events: ScrapedEvent[] = [];
-  try {
-    // CPP uses Campus Groups / Campus Labs for club events
-    const url = 'https://cpp.campuslabs.com/engage/events';
-    const res = await fetchWithTimeout(url);
-    if (!res.ok) return events;
-    const html = await res.text();
-    const $ = cheerio.load(html);
+function parseDateAndTime(text: string): {
+  date: string | null;
+  time: string | null;
+  matchIndex: number;
+  matchLength: number;
+} {
+  const pattern =
+    /\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4}),\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?(?:\s*[–-]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm))?)/i;
 
-    // Campus Labs renders events as JSON in a script tag
-    $('script').each((_, el) => {
-      const content = $(el).html() || '';
-      if (content.includes('"title"') && content.includes('"startDate"')) {
-        try {
-          const match = content.match(/\[(\{[\s\S]*"title"[\s\S]*\})\]/);
-          if (match) {
-            const parsed = JSON.parse('[' + match[1] + ']');
-            for (const item of parsed) {
-              const desc = item.description || '';
-              const title = item.title || '';
-              if (containsFreeFood(title + ' ' + desc)) {
-                events.push({
-                  title,
-                  description: desc.slice(0, 500),
-                  date: item.startDate || new Date().toISOString(),
-                  time: item.startTime || null,
-                  location: item.location || null,
-                  organizer: item.organizationName || null,
-                  source_url: item.url ? `https://cpp.campuslabs.com${item.url}` : url,
-                  source_name: 'CPP Campus Groups',
-                  tags: extractTags(title + ' ' + desc),
-                  has_free_food: true,
-                });
-              }
-            }
-          }
-        } catch { /* skip malformed */ }
-      }
-    });
+  const match = text.match(pattern);
 
-    // Also try parsing visible event cards
-    $('[data-testid="event-card"], .event-card, article').each((_, el) => {
-      const title = $(el).find('h2, h3, .event-title').first().text().trim();
-      const desc = $(el).find('p, .event-description').first().text().trim();
-      const dateStr = $(el).find('[datetime], .event-date, time').first().attr('datetime') ||
-                      $(el).find('[datetime], .event-date, time').first().text().trim();
-      const location = $(el).find('.event-location, [data-location]').first().text().trim();
-      const href = $(el).find('a').first().attr('href');
-
-      if (title && containsFreeFood(title + ' ' + desc)) {
-        events.push({
-          title,
-          description: desc.slice(0, 500),
-          date: dateStr || new Date().toISOString(),
-          time: null,
-          location: location || null,
-          organizer: null,
-          source_url: href ? (href.startsWith('http') ? href : `https://cpp.campuslabs.com${href}`) : url,
-          source_name: 'CPP Campus Groups',
-          tags: extractTags(title + ' ' + desc),
-          has_free_food: true,
-        });
-      }
-    });
-  } catch (err) {
-    console.error('CPP CampusGroups scrape error:', err);
+  if (!match || match.index === undefined) {
+    return {
+      date: null,
+      time: null,
+      matchIndex: -1,
+      matchLength: 0,
+    };
   }
-  return events;
-}
 
-// -------------------------------------------------------
-// Scraper 2: CPP Official Events Calendar
-// -------------------------------------------------------
-async function scrapeCPPOfficialCalendar(): Promise<ScrapedEvent[]> {
-  const events: ScrapedEvent[] = [];
-  try {
-    const url = 'https://www.cpp.edu/campus-life/events.shtml';
-    const res = await fetchWithTimeout(url);
-    if (!res.ok) return events;
-    const html = await res.text();
-    const $ = cheerio.load(html);
+  const month = MONTHS[match[1].toLowerCase()];
+  const day = match[2].padStart(2, '0');
+  const year = match[3];
 
-    $('article, .event-item, .views-row, [class*="event"]').each((_, el) => {
-      const title = $(el).find('h2, h3, h4, .event-title, a').first().text().trim();
-      const desc = $(el).find('p, .field-body, .event-body').first().text().trim();
-      const dateStr = $(el).find('time, .date, .field-date').first().attr('datetime') ||
-                      $(el).find('time, .date, .field-date').first().text().trim();
-      const location = $(el).find('.location, .field-location, [class*="location"]').first().text().trim();
-      const href = $(el).find('a').first().attr('href');
-
-      if (!title) return;
-      const combined = title + ' ' + desc;
-      if (containsFreeFood(combined)) {
-        events.push({
-          title,
-          description: desc.slice(0, 500),
-          date: dateStr || new Date().toISOString(),
-          time: null,
-          location: location || null,
-          organizer: 'Cal Poly Pomona',
-          source_url: href ? (href.startsWith('http') ? href : `https://www.cpp.edu${href}`) : url,
-          source_name: 'CPP Official Calendar',
-          tags: extractTags(combined),
-          has_free_food: true,
-        });
-      }
-    });
-  } catch (err) {
-    console.error('CPP Official Calendar scrape error:', err);
-  }
-  return events;
-}
-
-// -------------------------------------------------------
-// Scraper 3: CPP Student Affairs / Dean of Students
-// -------------------------------------------------------
-async function scrapeCPPStudentAffairs(): Promise<ScrapedEvent[]> {
-  const events: ScrapedEvent[] = [];
-  try {
-    const urls = [
-      'https://www.cpp.edu/student-affairs/events.shtml',
-      'https://www.cpp.edu/asi/events.shtml',
-    ];
-    for (const url of urls) {
-      try {
-        const res = await fetchWithTimeout(url);
-        if (!res.ok) continue;
-        const html = await res.text();
-        const $ = cheerio.load(html);
-
-        $('article, .event, li, tr').each((_, el) => {
-          const title = $(el).find('a, h2, h3, h4').first().text().trim();
-          const desc = $(el).text().trim();
-          const href = $(el).find('a').first().attr('href');
-          const dateStr = $(el).find('time').first().attr('datetime') || '';
-
-          if (!title || title.length < 5) return;
-          if (containsFreeFood(desc)) {
-            events.push({
-              title: title.slice(0, 200),
-              description: desc.slice(0, 500),
-              date: dateStr || new Date().toISOString(),
-              time: null,
-              location: null,
-              organizer: 'CPP Student Affairs',
-              source_url: href ? (href.startsWith('http') ? href : `https://www.cpp.edu${href}`) : url,
-              source_name: 'CPP Student Affairs',
-              tags: extractTags(desc),
-              has_free_food: true,
-            });
-          }
-        });
-      } catch { /* skip */ }
-    }
-  } catch (err) {
-    console.error('CPP Student Affairs scrape error:', err);
-  }
-  return events;
-}
-
-// -------------------------------------------------------
-// Scraper 4: Eventbrite - Pomona / Cal Poly area
-// -------------------------------------------------------
-async function scrapeEventbritePomona(): Promise<ScrapedEvent[]> {
-  const events: ScrapedEvent[] = [];
-  try {
-    // Eventbrite search for free food events near Cal Poly Pomona
-    const queries = [
-      'free+food+cal+poly+pomona',
-      'free+food+pomona+ca+college',
-      'free+food+student+pomona',
-    ];
-    for (const q of queries) {
-      try {
-        const url = `https://www.eventbrite.com/d/ca--pomona/free--events/?q=${q}`;
-        const res = await fetchWithTimeout(url);
-        if (!res.ok) continue;
-        const html = await res.text();
-        const $ = cheerio.load(html);
-
-        // Eventbrite event cards
-        $('[data-event-id], .eds-event-card, article[class*="event"]').each((_, el) => {
-          const title = $(el).find('h2, h3, [class*="title"]').first().text().trim();
-          const desc = $(el).find('[class*="summary"], [class*="description"], p').first().text().trim();
-          const dateStr = $(el).find('time').first().attr('datetime') ||
-                          $(el).find('[class*="date"]').first().text().trim();
-          const location = $(el).find('[class*="location"], [class*="venue"]').first().text().trim();
-          const href = $(el).find('a').first().attr('href');
-
-          if (!title) return;
-          const combined = title + ' ' + desc;
-          if (containsFreeFood(combined)) {
-            events.push({
-              title: title.slice(0, 200),
-              description: desc.slice(0, 500),
-              date: dateStr || new Date().toISOString(),
-              time: null,
-              location: location || 'Pomona, CA area',
-              organizer: null,
-              source_url: href ? (href.startsWith('http') ? href : `https://www.eventbrite.com${href}`) : url,
-              source_name: 'Eventbrite',
-              tags: extractTags(combined),
-              has_free_food: true,
-            });
-          }
-        });
-      } catch { /* skip */ }
-    }
-  } catch (err) {
-    console.error('Eventbrite scrape error:', err);
-  }
-  return events;
-}
-
-// -------------------------------------------------------
-// Scraper 5: Instagram / Facebook public pages (text parsing fallback)
-// Social media scraping is blocked, so we use fallback demo data
-// that admins can replace with real data
-// -------------------------------------------------------
-
-// -------------------------------------------------------
-// Fallback: seed with realistic sample events so the
-// site always has something to show while scrapers run
-// -------------------------------------------------------
-export function getSampleEvents(): ScrapedEvent[] {
-  const now = new Date();
-  const addDays = (d: Date, n: number) => {
-    const copy = new Date(d);
-    copy.setDate(copy.getDate() + n);
-    return copy.toISOString().split('T')[0];
+  return {
+    date: `${year}-${month}-${day}`,
+    time: cleanText(match[4]),
+    matchIndex: match.index,
+    matchLength: match[0].length,
   };
-
-  return [
-    {
-      title: 'SWE Club Welcome Social — Free Pizza!',
-      description: 'Come meet the Society of Women Engineers chapter at CPP! Free pizza for all attendees. Learn about our upcoming events, mentorship programs, and how to get involved. All majors welcome!',
-      date: addDays(now, 2),
-      time: '5:00 PM',
-      location: 'Building 8, Room 228',
-      organizer: 'Society of Women Engineers - CPP',
-      source_url: 'https://cpp.campuslabs.com/engage',
-      source_name: 'CPP Campus Groups',
-      tags: ['Club', 'Social', 'Free Food'],
-      has_free_food: true,
-    },
-    {
-      title: 'MESA Club General Meeting — Tacos Provided',
-      description: 'Join MESA (Mathematics, Engineering, Science Achievement) for our weekly general meeting. We\'re providing free tacos this week! Come hungry, meet other STEM students, and hear about upcoming competitions and study groups.',
-      date: addDays(now, 3),
-      time: '6:00 PM',
-      location: '3801 W Temple Ave, Building 17',
-      organizer: 'MESA Club CPP',
-      source_url: 'https://cpp.campuslabs.com/engage',
-      source_name: 'CPP Campus Groups',
-      tags: ['Club', 'Academic', 'Free Food'],
-      has_free_food: true,
-    },
-    {
-      title: 'Career Fair Pre-Event Mixer — Light Refreshments',
-      description: 'Prepare for the upcoming career fair with this networking mixer. Light refreshments and snacks provided. Bring your resume and get tips from Career Center staff and alumni.',
-      date: addDays(now, 5),
-      time: '4:30 PM',
-      location: 'University Union, Room 206',
-      organizer: 'CPP Career Center',
-      source_url: 'https://www.cpp.edu/career/',
-      source_name: 'CPP Official Calendar',
-      tags: ['Career', 'Social', 'Free Food'],
-      has_free_food: true,
-    },
-    {
-      title: 'Asian Student Association Cultural Night',
-      description: 'Celebrate Asian heritage at ASA\'s annual cultural night! Traditional food provided free for all guests. Enjoy performances, learn about different cultures, and connect with the community.',
-      date: addDays(now, 7),
-      time: '7:00 PM',
-      location: 'Bronco Student Center Ballroom',
-      organizer: 'Asian Student Association - CPP',
-      source_url: 'https://cpp.campuslabs.com/engage',
-      source_name: 'CPP Campus Groups',
-      tags: ['Club', 'Cultural', 'Social', 'Free Food'],
-      has_free_food: true,
-    },
-    {
-      title: 'ACM Tech Talk: Intro to Web Dev — Snacks & Drinks',
-      description: 'Association for Computing Machinery presents a beginner-friendly workshop on web development fundamentals. Free snacks and drinks provided. Bring your laptop if you want to follow along!',
-      date: addDays(now, 4),
-      time: '6:30 PM',
-      location: 'Building 8, Room 101',
-      organizer: 'ACM at Cal Poly Pomona',
-      source_url: 'https://cpp.campuslabs.com/engage',
-      source_name: 'CPP Campus Groups',
-      tags: ['Club', 'Academic', 'Free Food'],
-      has_free_food: true,
-    },
-    {
-      title: 'Latinx Student Union Taco Tuesday Social',
-      description: 'LSU\'s weekly Taco Tuesday is back! Free tacos for everyone. Come hang out on the lawn, meet new people, and enjoy the vibe. No membership required — all students welcome!',
-      date: addDays(now, 1),
-      time: '12:00 PM',
-      location: 'Rose Garden Lawn, Cal Poly Pomona',
-      organizer: 'Latinx Student Union',
-      source_url: 'https://cpp.campuslabs.com/engage',
-      source_name: 'CPP Campus Groups',
-      tags: ['Club', 'Cultural', 'Social', 'Free Food'],
-      has_free_food: true,
-    },
-    {
-      title: 'NSBE Info Session — Free Lunch Provided',
-      description: 'National Society of Black Engineers chapter at CPP is hosting an info session for prospective members. Free lunch provided. Learn about scholarships, networking events, and professional development opportunities.',
-      date: addDays(now, 6),
-      time: '12:00 PM',
-      location: 'College of Engineering, Room 220',
-      organizer: 'NSBE at CPP',
-      source_url: 'https://cpp.campuslabs.com/engage',
-      source_name: 'CPP Campus Groups',
-      tags: ['Club', 'Career', 'Free Food'],
-      has_free_food: true,
-    },
-    {
-      title: 'ASI Student Government Open House',
-      description: 'Associated Students Inc. is opening its doors for a campus-wide open house. Free food and refreshments for all students. Learn how ASI advocates for you, and find out how to get involved in student government.',
-      date: addDays(now, 9),
-      time: '11:00 AM',
-      location: 'Bronco Student Center, Room 121',
-      organizer: 'Associated Students Inc. (ASI)',
-      source_url: 'https://www.cpp.edu/asi/',
-      source_name: 'CPP Student Affairs',
-      tags: ['Social', 'Free Food'],
-      has_free_food: true,
-    },
-  ];
 }
 
-// -------------------------------------------------------
-// Main export: run all scrapers
-// -------------------------------------------------------
-export async function scrapeAllSources(): Promise<ScrapedEvent[]> {
-  console.log('Starting scrape of all sources...');
+function extractOrganizer(text: string): string | null {
+  const match = text.match(/Organization:\s*(.+)$/i);
 
-  const results = await Promise.allSettled([
-    scrapeCPPCampusGroups(),
-    scrapeCPPOfficialCalendar(),
-    scrapeCPPStudentAffairs(),
-    scrapeEventbritePomona(),
-  ]);
+  if (!match) return null;
 
-  const allEvents: ScrapedEvent[] = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      allEvents.push(...result.value);
-    }
+  let organizer = match[1];
+
+  organizer = organizer
+    .split(/\s+List Other Equipment/i)[0]
+    .split(/\s+What type of parking/i)[0]
+    .split(/\s+Event Name:/i)[0]
+    .trim();
+
+  return organizer || null;
+}
+
+function extractEventLocator(text: string): string | null {
+  const match = text.match(/Event Locator:\s*([A-Z0-9-]+)/i);
+  return match ? match[1].trim() : null;
+}
+
+function extractDescription(
+  text: string,
+  dateMatchIndex: number,
+  dateMatchLength: number
+): string {
+  if (dateMatchIndex < 0) return '';
+
+  let description = text.slice(dateMatchIndex + dateMatchLength).trim();
+
+  description = description.split(/Event type:/i)[0].trim();
+
+  return description.slice(0, 1000);
+}
+
+function extractLocation(
+  text: string,
+  title: string,
+  dateMatchIndex: number
+): string | null {
+  if (dateMatchIndex < 0) return null;
+
+  let beforeDate = text.slice(0, dateMatchIndex).trim();
+
+  if (beforeDate.startsWith(title)) {
+    beforeDate = beforeDate.slice(title.length).trim();
   }
 
-  // Deduplicate by title similarity
-  const seen = new Set<string>();
-  const deduplicated = allEvents.filter(e => {
-    const key = e.title.toLowerCase().slice(0, 40);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  beforeDate = beforeDate.replace(
+    /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+/i,
+    ''
+  );
+
+  return beforeDate || null;
+}
+
+function findEventBlock(
+  $: cheerio.CheerioAPI,
+  heading: any
+): string | null {
+  let current = $(heading).parent();
+
+  for (let i = 0; i < 7; i++) {
+    const text = cleanText(current.text());
+
+    const locatorCount = (text.match(/Event Locator:/gi) || []).length;
+
+    if (
+      locatorCount === 1 &&
+      /(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),/.test(
+        text
+      )
+    ) {
+      return text;
+    }
+
+    current = current.parent();
+
+    if (!current.length) break;
+  }
+
+  return null;
+}
+
+async function scrapeCPPUniversityEvents(): Promise<ScrapedEvent[]> {
+  const response = await fetchWithTimeout(CPP_EVENTS_URL);
+
+  if (!response.ok) {
+    throw new Error(
+      `CPP events page returned HTTP ${response.status}`
+    );
+  }
+
+  const html = await response.text();
+  const $ = cheerio.load(html);
+
+  const events: ScrapedEvent[] = [];
+
+  $('h2, h3').each((_, heading) => {
+    const title = cleanText($(heading).text());
+
+    if (!title || title === 'University Events') {
+      return;
+    }
+
+    const blockText = findEventBlock($, heading);
+
+    if (!blockText) {
+      return;
+    }
+
+    const foodEvidence = findFoodEvidence(blockText);
+
+    if (!foodEvidence) {
+      return;
+    }
+
+    const parsed = parseDateAndTime(blockText);
+
+    if (!parsed.date) {
+      console.log(`Skipping event with no date: ${title}`);
+      return;
+    }
+
+    const eventLocator = extractEventLocator(blockText);
+    const organizer = extractOrganizer(blockText);
+
+    const description = extractDescription(
+      blockText,
+      parsed.matchIndex,
+      parsed.matchLength
+    );
+
+    const location = extractLocation(
+      blockText,
+      title,
+      parsed.matchIndex
+    );
+
+    let sourceUrl = CPP_EVENTS_URL;
+
+    const headingLink =
+      $(heading).find('a').first().attr('href') ||
+      $(heading).parent().find('a').first().attr('href');
+
+    if (headingLink) {
+      try {
+        sourceUrl = new URL(
+          headingLink,
+          'https://www.cpp.edu'
+        ).toString();
+      } catch {
+        sourceUrl = CPP_EVENTS_URL;
+      }
+    }
+
+    events.push({
+      title,
+      description,
+      date: parsed.date,
+      time: parsed.time,
+      location,
+      organizer,
+      source_url: sourceUrl,
+      source_name: 'CPP University Events',
+      source_event_id: eventLocator,
+      tags: extractTags(blockText),
+      has_free_food: true,
+      food_evidence: foodEvidence,
+      food_confidence: 1,
+      rsvp_required:
+        /registration required|register for|registration is required/i.test(
+          blockText
+        )
+          ? true
+          : /no registration required|no advance registration required/i.test(
+              blockText
+            )
+          ? false
+          : null,
+    });
   });
 
-  // If no real events scraped, inject sample events so the site always has content
-  if (deduplicated.length === 0) {
-    console.log('No events scraped — using sample events.');
-    return getSampleEvents();
-  }
+  return events;
+}
 
-  console.log(`Scraped ${deduplicated.length} unique events.`);
-  return deduplicated;
+// Temporary compatibility with the current API route.
+// This intentionally returns NOTHING.
+// We never want fake/sample events shown again.
+export function getSampleEvents(): ScrapedEvent[] {
+  return [];
+}
+
+export async function scrapeAllSources(): Promise<ScrapedEvent[]> {
+  console.log('Scraping CPP University Events...');
+
+  try {
+    const events = await scrapeCPPUniversityEvents();
+
+    const seen = new Set<string>();
+
+    const deduplicated = events.filter(event => {
+      const key =
+        event.source_event_id ||
+        `${event.title.toLowerCase()}|${event.date}`;
+
+      if (seen.has(key)) {
+        return false;
+      }
+
+      seen.add(key);
+      return true;
+    });
+
+    console.log(
+      `Found ${deduplicated.length} confirmed free-food events.`
+    );
+
+    return deduplicated;
+  } catch (error) {
+    console.error('CPP University Events scrape failed:', error);
+
+    // Important: return nothing instead of inventing events.
+    return [];
+  }
 }
